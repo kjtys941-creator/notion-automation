@@ -1,6 +1,6 @@
 import google.generativeai as genai
 from notion_client import Client
-from ddgs import DDGS
+from duckduckgo_search import DDGS
 import time
 import os
 
@@ -55,8 +55,8 @@ try:
     print(f"-> 合計 {len(company_pages)} 社のデータを取得しました。")
 
     genai.configure(api_key=GEMINI_API_KEY)
-    # モデルを Gemini 3.1 Pro に変更
-    model = genai.GenerativeModel("gemini-3.1-pro")
+    # Proモデルに設定
+    model = genai.GenerativeModel("gemini-1.5-pro")
 
     for i, company in enumerate(company_pages):
         company_name = company["name"]
