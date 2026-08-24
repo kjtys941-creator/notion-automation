@@ -21,18 +21,21 @@ try:
             props = page.get("properties", {})
             title_prop = props.get("Company Name", {}).get("title", [])
             
-            # ★ 既存のNEWS欄の内容を取得（上書き防止用）
+            # NEWS欄の既存データを取得
             news_prop = props.get("NEWS", {}).get("rich_text", [])
-            existing_news = ""
-            if news_prop:
-                existing_news = "".join([t.get("text", {}).get("content", "") for t in news_prop])
+            existing_news = "".join([t.get("text", {}).get("content", "") for t in news_prop]) if news_prop else ""
+            
+            # Competitor欄の既存データを取得（手動入力済みのデータを消さないため）
+            comp_prop = props.get("Competitor", {}).get("rich_text", [])
+            existing_competitor = "".join([t.get("text", {}).get("content", "") for t in comp_prop]) if comp_prop else ""
 
             if title_prop:
                 company_name = title_prop[0].get("text", {}).get("content", "")
                 company_pages.append({
                     "id": page["id"], 
                     "name": company_name,
-                    "existing_news": existing_news
+                    "existing_news": existing_news,
+                    "existing_competitor": existing_competitor
                 })
 
     genai.configure(api_key=GEMINI_API_KEY)
@@ -42,11 +45,12 @@ try:
         company_name = company["name"]
         company_id = company["id"]
         existing_news = company["existing_news"]
+        existing_competitor = company["existing_competitor"]
+        
         print(f"[{company_name}] の情報を収集中... ({i+1}/{len(company_pages)})")
 
         news_snippet = ""
         try:
-            # ★ 検索クエリを強化（ベトナム関連メディアを明示的に指定）
             queries = [
                 f"{company_name} ニュース",
                 f"{company_name} プレスリリース",
@@ -68,49 +72,76 @@ try:
             news_snippet = ""
 
         try:
+            # ★ プロンプトを変更し、ニュースと競合企業の両方を出力させる
             prompt = f"""
             対象企業: {company_name}
             収集データ:
             {news_snippet}
             
-            上記データから、対象企業の直近のニュース、事業動向、プレスリリース等の最新情報を要約してください。
-            もし有効な情報が一切見つからない場合や無関係な情報のみの場合は、必ず「News Summary and Insights: None」とだけ出力してください。
-            有益な情報がある場合は、ビジネスパーソン向けに2〜3行で簡潔にまとめてください。
+            指示1: 収集データから対象企業の直近のニュースや事業動向を2〜3行で要約してください。有効な情報がない場合は「None」と出力してください。
+            指示2: あなたの持つ知識を用いて、対象企業の主な競合企業を3社程度挙げてください。（例: A社, B社, C社）。不明な場合は「不明」としてください。
+            
+            必ず以下のフォーマット通りに2行で出力してください。
+            NEWS: [要約、または None]
+            COMPETITOR: [競合企業名]
             """
             response = model.generate_content(prompt)
             ai_text = response.text.strip()
+            
+            # AIの出力をNEWSとCOMPETITORに分解
+            news_text = "None"
+            comp_text = ""
+            for line in ai_text.split('\n'):
+                if line.startswith("NEWS:"):
+                    news_text = line.replace("NEWS:", "").strip()
+                elif line.startswith("COMPETITOR:"):
+                    comp_text = line.replace("COMPETITOR:", "").strip()
         except Exception:
-            ai_text = "News Summary and Insights: None"
+            news_text = "None"
+            comp_text = ""
 
-        # ★ ロジック改善：空欄へのNo News記入と、既存データの上書き防止
-        if "News Summary and Insights: None" in ai_text or not ai_text:
+        properties_to_update = {}
+        has_new_news = False
+
+        # 1. NEWSの更新判定
+        if "None" in news_text or not news_text:
             if not existing_news:
-                # 既存のNEWS欄が空欄なら "No News" と記入
-                print(f"-> [{company_name}] 新着情報なし。Notionが空欄のため「No News」を記入します。")
-                notion.pages.update(
-                    page_id=company_id,
-                    properties={"NEWS": {"rich_text": [{"text": {"content": "No News"}}]}}
-                )
+                properties_to_update["NEWS"] = {"rich_text": [{"text": {"content": "No News"}}]}
+                print(f"  -> 新着ニュースなし。「No News」を記入します。")
             else:
-                # すでに文字が入っているなら上書きスキップ
-                print(f"-> [{company_name}] 新着情報なし。既存データを維持するため更新をスキップしました。")
+                print(f"  -> 新着ニュースなし。既存のNEWSを維持します。")
         else:
-            # 有益な情報が見つかった場合は更新して受信トレイにも追加
-            print(f"-> [{company_name}] 有益な情報が見つかりました！Notionを更新します。")
-            notion.pages.update(
-                page_id=company_id,
-                properties={"NEWS": {"rich_text": [{"text": {"content": ai_text}}]}}
-            )
-            notion.pages.create(
-                parent={"database_id": INBOX_DATABASE_ID},
-                properties={
-                    "トピック": {"title": [{"text": {"content": f"【グローバル巡回】{company_name} の最新情報チェック"}}]},
-                    "Company Master": {"relation": [{"id": company_id}]},
-                    "Emergency": {"multi_select": [{"name": "Middle"}]},
-                    "メール要約": {"rich_text": [{"text": {"content": ai_text}}]},
-                    "次のアクション": {"rich_text": [{"text": {"content": "内容を確認してアプローチ方針を検討する"}}]}
-                }
-            )
+            properties_to_update["NEWS"] = {"rich_text": [{"text": {"content": news_text}}]}
+            has_new_news = True
+            print(f"  -> 新着ニュースあり！更新します。")
+
+        # 2. Competitorの更新判定（Notion側が空欄の場合のみAIの回答を入力）
+        if not existing_competitor and comp_text and "不明" not in comp_text:
+            properties_to_update["Competitor"] = {"rich_text": [{"text": {"content": comp_text}}]}
+            print(f"  -> 競合企業を追加します: {comp_text}")
+
+        # 3. NotionのCompany CRM Masterを更新
+        if properties_to_update:
+            try:
+                notion.pages.update(page_id=company_id, properties=properties_to_update)
+            except Exception as e:
+                print(f"  -> ⚠️ Notion更新エラー: {e}")
+
+        # 4. 新着ニュースがあった場合のみ、受信トレイにタスク作成
+        if has_new_news:
+            try:
+                notion.pages.create(
+                    parent={"database_id": INBOX_DATABASE_ID},
+                    properties={
+                        "トピック": {"title": [{"text": {"content": f"【グローバル巡回】{company_name} の最新情報チェック"}}]},
+                        "Company Master": {"relation": [{"id": company_id}]},
+                        "Emergency": {"multi_select": [{"name": "Middle"}]},
+                        "メール要約": {"rich_text": [{"text": {"content": news_text}}]},
+                        "次のアクション": {"rich_text": [{"text": {"content": "内容を確認してアプローチ方針を検討する"}}]}
+                    }
+                )
+            except Exception:
+                pass
 
         if i < len(company_pages) - 1:
             time.sleep(10)
