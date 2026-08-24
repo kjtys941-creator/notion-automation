@@ -1,9 +1,10 @@
 name: Auto Search Run
 
 on:
+  workflow_dispatch:  # これを残すことで手動実行ボタンも引き続き使えます
   schedule:
-    - cron: '0 22,6 * * *' # 日本時間の07:00と15:00
-  workflow_dispatch:
+    - cron: '0 22 * * *'  # 日本時間 07:00
+    - cron: '0 4 * * *'   # 日本時間 13:00
 
 jobs:
   run-script:
