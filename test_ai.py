@@ -20,9 +20,20 @@ try:
         if parent.get("database_id", "").replace("-", "") == CRM_DATABASE_ID.replace("-", ""):
             props = page.get("properties", {})
             title_prop = props.get("Company Name", {}).get("title", [])
+            
+            # ★ 既存のNEWS欄の内容を取得（上書き防止用）
+            news_prop = props.get("NEWS", {}).get("rich_text", [])
+            existing_news = ""
+            if news_prop:
+                existing_news = "".join([t.get("text", {}).get("content", "") for t in news_prop])
+
             if title_prop:
                 company_name = title_prop[0].get("text", {}).get("content", "")
-                company_pages.append({"id": page["id"], "name": company_name})
+                company_pages.append({
+                    "id": page["id"], 
+                    "name": company_name,
+                    "existing_news": existing_news
+                })
 
     genai.configure(api_key=GEMINI_API_KEY)
     model = genai.GenerativeModel("gemini-1.5-flash")
@@ -30,15 +41,20 @@ try:
     for i, company in enumerate(company_pages):
         company_name = company["name"]
         company_id = company["id"]
+        existing_news = company["existing_news"]
         print(f"[{company_name}] の情報を収集中... ({i+1}/{len(company_pages)})")
 
         news_snippet = ""
         try:
-            # 検索クエリを実用的かつシンプルに変更
+            # ★ 検索クエリを強化（ベトナム関連メディアを明示的に指定）
             queries = [
                 f"{company_name} ニュース",
                 f"{company_name} プレスリリース",
-                f"{company_name} ベトナム"
+                f"{company_name} ベトナム",
+                f"{company_name} site:viet-jo.com",
+                f"{company_name} site:nna.jp",
+                f"{company_name} site:jetro.go.jp",
+                f"{company_name} site:viet-kabu.com"
             ]
             ddgs = DDGS()
             for q in queries:
@@ -66,12 +82,24 @@ try:
         except Exception:
             ai_text = "News Summary and Insights: None"
 
+        # ★ ロジック改善：空欄へのNo News記入と、既存データの上書き防止
         if "News Summary and Insights: None" in ai_text or not ai_text:
-            print(f"-> [{company_name}] 新着情報がないため、Notionの更新をスキップしました。")
+            if not existing_news:
+                # 既存のNEWS欄が空欄なら "No News" と記入
+                print(f"-> [{company_name}] 新着情報なし。Notionが空欄のため「No News」を記入します。")
+                notion.pages.update(
+                    page_id=company_id,
+                    properties={"NEWS": {"rich_text": [{"text": {"content": "No News"}}]}}
+                )
+            else:
+                # すでに文字が入っているなら上書きスキップ
+                print(f"-> [{company_name}] 新着情報なし。既存データを維持するため更新をスキップしました。")
         else:
+            # 有益な情報が見つかった場合は更新して受信トレイにも追加
+            print(f"-> [{company_name}] 有益な情報が見つかりました！Notionを更新します。")
             notion.pages.update(
                 page_id=company_id,
-                properties={"最新業界・競合ニュース": {"rich_text": [{"text": {"content": ai_text}}]}}
+                properties={"NEWS": {"rich_text": [{"text": {"content": ai_text}}]}}
             )
             notion.pages.create(
                 parent={"database_id": INBOX_DATABASE_ID},
@@ -83,7 +111,6 @@ try:
                     "次のアクション": {"rich_text": [{"text": {"content": "内容を確認してアプローチ方針を検討する"}}]}
                 }
             )
-            print(f"-> [{company_name}] の情報更新を完了しました！")
 
         if i < len(company_pages) - 1:
             time.sleep(10)
