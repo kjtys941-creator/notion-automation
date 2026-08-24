@@ -12,20 +12,30 @@ INBOX_DATABASE_ID = "3c45c2f07cc58022986ff1726b012541"
 try:
     notion = Client(auth=NOTION_TOKEN)
     print("1. 企業CRMマスターから企業一覧を取得中...")
-    search_response = notion.search(filter={"property": "object", "value": "page"})
     
     company_pages = []
-    for page in search_response.get("results", []):
-        parent = page.get("parent", {})
-        if parent.get("database_id", "").replace("-", "") == CRM_DATABASE_ID.replace("-", ""):
+    has_more = True
+    start_cursor = None
+
+    # ★ 変更点: 100件の制限を突破し、データベース内の全件を取得するループ処理
+    while has_more:
+        query_args = {}
+        if start_cursor:
+            query_args["start_cursor"] = start_cursor
+            
+        search_response = notion.databases.query(
+            database_id=CRM_DATABASE_ID, 
+            **query_args
+        )
+        
+        for page in search_response.get("results", []):
             props = page.get("properties", {})
             title_prop = props.get("Company Name", {}).get("title", [])
             
-            # NEWS欄の既存データを取得
+            # 既存データの取得（見えないスペース等の誤判定を防ぐために .strip() を追加）
             news_prop = props.get("NEWS", {}).get("rich_text", [])
             existing_news = "".join([t.get("text", {}).get("content", "") for t in news_prop]) if news_prop else ""
             
-            # Competitor欄の既存データを取得（手動入力済みのデータを消さないため）
             comp_prop = props.get("Competitor", {}).get("rich_text", [])
             existing_competitor = "".join([t.get("text", {}).get("content", "") for t in comp_prop]) if comp_prop else ""
 
@@ -34,9 +44,14 @@ try:
                 company_pages.append({
                     "id": page["id"], 
                     "name": company_name,
-                    "existing_news": existing_news,
-                    "existing_competitor": existing_competitor
+                    "existing_news": existing_news.strip(),
+                    "existing_competitor": existing_competitor.strip()
                 })
+        
+        has_more = search_response.get("has_more", False)
+        start_cursor = search_response.get("next_cursor", None)
+
+    print(f"-> 合計 {len(company_pages)} 社のデータを取得しました。")
 
     genai.configure(api_key=GEMINI_API_KEY)
     model = genai.GenerativeModel("gemini-1.5-flash")
@@ -72,7 +87,6 @@ try:
             news_snippet = ""
 
         try:
-            # ★ プロンプトを変更し、ニュースと競合企業の両方を出力させる
             prompt = f"""
             対象企業: {company_name}
             収集データ:
@@ -88,7 +102,6 @@ try:
             response = model.generate_content(prompt)
             ai_text = response.text.strip()
             
-            # AIの出力をNEWSとCOMPETITORに分解
             news_text = "None"
             comp_text = ""
             for line in ai_text.split('\n'):
@@ -115,7 +128,7 @@ try:
             has_new_news = True
             print(f"  -> 新着ニュースあり！更新します。")
 
-        # 2. Competitorの更新判定（Notion側が空欄の場合のみAIの回答を入力）
+        # 2. Competitorの更新判定
         if not existing_competitor and comp_text and "不明" not in comp_text:
             properties_to_update["Competitor"] = {"rich_text": [{"text": {"content": comp_text}}]}
             print(f"  -> 競合企業を追加します: {comp_text}")
