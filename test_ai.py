@@ -34,19 +34,20 @@ try:
 
         news_snippet = ""
         try:
-            with DDGS() as ddgs:
-                queries = [
-                    f"{company_name} site:vietjo.com", f"{company_name} site:nna.jp",
-                    f"{company_name} site:jetro.go.jp", f"{company_name} プレスリリース",
-                    f"{company_name} site:facebook.com", f"{company_name} site:instagram.com"
-                ]
-                for q in queries:
-                    try:
-                        results = [r for r in ddgs.text(q, max_results=1)]
-                        for r in results:
-                            news_snippet += f"【情報元: {q}】{r.get('body', '')}\n"
-                    except Exception:
-                        continue
+            # 検索クエリを実用的かつシンプルに変更
+            queries = [
+                f"{company_name} ニュース",
+                f"{company_name} プレスリリース",
+                f"{company_name} ベトナム"
+            ]
+            ddgs = DDGS()
+            for q in queries:
+                try:
+                    results = list(ddgs.text(q, max_results=2))
+                    for r in results:
+                        news_snippet += f"【検索: {q}】{r.get('body', '')}\n"
+                except Exception:
+                    continue
         except Exception:
             news_snippet = ""
 
@@ -56,8 +57,8 @@ try:
             収集データ:
             {news_snippet}
             
-            特筆すべき最新の動きや情報が見つからない場合や、関連性が低い場合は、
-            必ず「News Summary and Insights: None」とだけ出力してください。
+            上記データから、対象企業の直近のニュース、事業動向、プレスリリース等の最新情報を要約してください。
+            もし有効な情報が一切見つからない場合や無関係な情報のみの場合は、必ず「News Summary and Insights: None」とだけ出力してください。
             有益な情報がある場合は、ビジネスパーソン向けに2〜3行で簡潔にまとめてください。
             """
             response = model.generate_content(prompt)
@@ -65,8 +66,7 @@ try:
         except Exception:
             ai_text = "News Summary and Insights: None"
 
-        # ★ ここが変更点：情報がない場合はNotionへの書き込みをスキップ
-        if "News Summary and Insights: None" in ai_text:
+        if "News Summary and Insights: None" in ai_text or not ai_text:
             print(f"-> [{company_name}] 新着情報がないため、Notionの更新をスキップしました。")
         else:
             notion.pages.update(
@@ -83,10 +83,10 @@ try:
                     "次のアクション": {"rich_text": [{"text": {"content": "内容を確認してアプローチ方針を検討する"}}]}
                 }
             )
-            print(f"-> [{company_name}] の情報更新が完了しました！")
+            print(f"-> [{company_name}] の情報更新を完了しました！")
 
         if i < len(company_pages) - 1:
-            time.sleep(15)
+            time.sleep(10)
 
     print("\n🎉 すべての企業の巡回が完了しました！")
 except Exception as e:
