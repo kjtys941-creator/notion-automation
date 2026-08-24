@@ -15,41 +15,39 @@ try:
     
     company_pages = []
     has_more = True
-    start_cursor = None
+    next_cursor = None
 
-    # ★ 変更点: 100件の制限を突破し、データベース内の全件を取得するループ処理
+    # ★ 修正: 以前成功した確実な検索方法（search）を使い、全件ページめくりを行う
     while has_more:
-        query_args = {}
-        if start_cursor:
-            query_args["start_cursor"] = start_cursor
+        query_args = {"filter": {"property": "object", "value": "page"}}
+        if next_cursor:
+            query_args["start_cursor"] = next_cursor
             
-        search_response = notion.databases.query(
-            database_id=CRM_DATABASE_ID, 
-            **query_args
-        )
+        search_response = notion.search(**query_args)
         
         for page in search_response.get("results", []):
-            props = page.get("properties", {})
-            title_prop = props.get("Company Name", {}).get("title", [])
-            
-            # 既存データの取得（見えないスペース等の誤判定を防ぐために .strip() を追加）
-            news_prop = props.get("NEWS", {}).get("rich_text", [])
-            existing_news = "".join([t.get("text", {}).get("content", "") for t in news_prop]) if news_prop else ""
-            
-            comp_prop = props.get("Competitor", {}).get("rich_text", [])
-            existing_competitor = "".join([t.get("text", {}).get("content", "") for t in comp_prop]) if comp_prop else ""
+            parent = page.get("parent", {})
+            if parent.get("database_id", "").replace("-", "") == CRM_DATABASE_ID.replace("-", ""):
+                props = page.get("properties", {})
+                title_prop = props.get("Company Name", {}).get("title", [])
+                
+                news_prop = props.get("NEWS", {}).get("rich_text", [])
+                existing_news = "".join([t.get("text", {}).get("content", "") for t in news_prop]) if news_prop else ""
+                
+                comp_prop = props.get("Competitor", {}).get("rich_text", [])
+                existing_competitor = "".join([t.get("text", {}).get("content", "") for t in comp_prop]) if comp_prop else ""
 
-            if title_prop:
-                company_name = title_prop[0].get("text", {}).get("content", "")
-                company_pages.append({
-                    "id": page["id"], 
-                    "name": company_name,
-                    "existing_news": existing_news.strip(),
-                    "existing_competitor": existing_competitor.strip()
-                })
+                if title_prop:
+                    company_name = title_prop[0].get("text", {}).get("content", "")
+                    company_pages.append({
+                        "id": page["id"], 
+                        "name": company_name,
+                        "existing_news": existing_news.strip(),
+                        "existing_competitor": existing_competitor.strip()
+                    })
         
         has_more = search_response.get("has_more", False)
-        start_cursor = search_response.get("next_cursor", None)
+        next_cursor = search_response.get("next_cursor", None)
 
     print(f"-> 合計 {len(company_pages)} 社のデータを取得しました。")
 
