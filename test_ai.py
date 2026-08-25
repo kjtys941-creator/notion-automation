@@ -55,8 +55,10 @@ try:
     print(f"-> 合計 {len(company_pages)} 社のデータを取得しました。")
 
     genai.configure(api_key=GEMINI_API_KEY)
-    # Proモデルに設定
-    model = genai.GenerativeModel("gemini-1.5-pro")
+    
+    # 🚀 修正ポイント：モデル名を「gemini-1.5-pro-latest」に変更（404エラー対策）
+    model = genai.GenerativeModel("gemini-1.5-pro-latest")
+    # ※もしこれでエラーになる場合、より高速で安定している "gemini-1.5-flash" に変更してみてください。
 
     for i, company in enumerate(company_pages):
         company_name = company["name"]
