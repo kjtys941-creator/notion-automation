@@ -3,6 +3,7 @@ from notion_client import Client
 from duckduckgo_search import DDGS
 import time
 import os
+import json
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 NOTION_TOKEN = os.environ.get("NOTION_API_KEY", "")
@@ -54,7 +55,6 @@ try:
 
     print(f"-> 合計 {len(company_pages)} 社のデータを取得しました。")
 
-    # 新しいGoogle GenAIクライアントの初期化
     client = genai.Client(api_key=GEMINI_API_KEY)
 
     for i, company in enumerate(company_pages):
@@ -72,8 +72,7 @@ try:
         news_snippet = ""
         queries = [
             f"{company_name} ニュース",
-            f"{company_name} プレスリリース",
-            f"{company_name} ベトナム"
+            f"{company_name} プレスリリース"
         ]
         for q in queries:
             try:
@@ -83,49 +82,54 @@ try:
             except Exception:
                 continue
 
-        # 2. AIによる分析 (NEWS, COMPETITOR, INDUSTRY)
+        # 2. 確実な読み取りのため、JSON形式で回答を出力させる
         prompt = f"""
-        対象名称: {company_name}
-        検索結果:
-        {news_snippet}
-        
-        指示1 (NEWS): 検索結果から対象の直近ニュースや事業動向を2〜3行で要約。有効情報がなければ「None」と出力。
-        指示2 (COMPETITOR): 対象または上位親企業の主な競合他社を2〜3社挙げてください（例: ダイキン工業, 三菱電機）。推測を含めて回答してください。
-        指示3 (INDUSTRY): 対象が属する業界を「大分類-詳細（例: 製造業-空調（機械））」の形式で分類してください。名称から推測できる場合も分類してください。
+対象企業名: {company_name}
+検索結果: {news_snippet}
 
-        【重要】必ず以下のフォーマット通りに出力してください。Markdown装飾（**などの太字）やリスト記号は絶対に使用しないでください。
-        NEWS: [要約、または None]
-        COMPETITOR: [競合企業名]
-        INDUSTRY: [業界分類]
-        """
+上記を踏まえ、以下の3つの情報を必ずJSON形式で出力してください。
+※重要※ 検索結果に情報がない場合でも、あなたの持つ一般的な知識からCOMPETITOR（競合）とINDUSTRY（業界）を必ず推測して埋めてください。NEWSは検索結果に最新情報がなければ "None" としてください。
+
+【出力JSONフォーマット】
+{{
+  "NEWS": "直近ニュースや事業動向の要約（なければ 'None'）",
+  "COMPETITOR": "主な競合他社2〜3社（例: ダイキン工業, 三菱電機。不明な場合は '不明'）",
+  "INDUSTRY": "大分類-詳細の形式で業界分類（例: 製造業-空調機械。不明な場合は '不明'）"
+}}
+"""
         
         news_text, comp_text, industry_text = "None", "", ""
         try:
-            # モデルを高速で安定した gemini-1.5-flash に変更
             response = client.models.generate_content(
                 model='gemini-1.5-flash',
                 contents=prompt,
             )
-            ai_text = response.text.replace("**", "").replace("*", "").strip()
+            # マークダウンの```json ... ```などを取り除いてきれいなJSON文字列にする
+            raw_text = response.text.strip()
+            if raw_text.startswith("```json"):
+                raw_text = raw_text[7:]
+            elif raw_text.startswith("```"):
+                raw_text = raw_text[3:]
+            if raw_text.endswith("```"):
+                raw_text = raw_text[:-3]
             
-            for line in ai_text.split('\n'):
-                line = line.strip()
-                if line.startswith("NEWS:"):
-                    news_text = line.replace("NEWS:", "").strip()
-                elif line.startswith("COMPETITOR:"):
-                    comp_text = line.replace("COMPETITOR:", "").strip()
-                elif line.startswith("INDUSTRY:"):
-                    industry_text = line.replace("INDUSTRY:", "").strip()
+            # JSONとして読み込む
+            data = json.loads(raw_text.strip())
+            
+            news_text = data.get("NEWS", "None")
+            comp_text = data.get("COMPETITOR", "")
+            industry_text = data.get("INDUSTRY", "")
+            
         except Exception as e:
-            print(f"  -> AI生成エラー: {e}")
+            print(f"  -> ⚠️ AIパースエラー: {e}")
 
         # 3. 業界ニュースの検索と要約
         ind_news_text = ""
         target_industry = existing_industry if existing_industry else industry_text
-        if target_industry and target_industry != "不明" and target_industry != "None":
+        if target_industry and target_industry != "不明" and target_industry != "None" and target_industry != "":
             try:
                 ind_query = f"{target_industry} 業界 最新 ニュース"
-                ind_results = list(ddgs.text(ind_query, max_results=3))
+                ind_results = list(ddgs.text(ind_query, max_results=2))
                 ind_snippet = "\n".join([r.get('body', '') for r in ind_results])
                 
                 if ind_snippet:
@@ -149,10 +153,10 @@ try:
             properties_to_update["NEWS"] = {"rich_text": [{"text": {"content": news_text}}]}
             has_new_news = True
 
-        if comp_text and "不明" not in comp_text and not existing_competitor:
+        if comp_text and comp_text != "不明" and not existing_competitor:
             properties_to_update["Competitor"] = {"rich_text": [{"text": {"content": comp_text}}]}
 
-        if industry_text and "不明" not in industry_text:
+        if industry_text and industry_text != "不明":
             properties_to_update["Industry"] = {"rich_text": [{"text": {"content": industry_text}}]}
 
         if ind_news_text:
@@ -182,7 +186,7 @@ try:
                 pass
 
         if i < len(company_pages) - 1:
-            time.sleep(5)
+            time.sleep(3)
 
     print("\n🎉 全企業の巡回・業界分析が完了しました！")
 except Exception as e:
