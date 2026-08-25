@@ -1,4 +1,4 @@
-import google.generativeai as genai
+from google import genai
 from notion_client import Client
 from duckduckgo_search import DDGS
 import time
@@ -54,11 +54,8 @@ try:
 
     print(f"-> 合計 {len(company_pages)} 社のデータを取得しました。")
 
-    genai.configure(api_key=GEMINI_API_KEY)
-    
-    # 🚀 修正ポイント：モデル名を「gemini-1.5-pro-latest」に変更（404エラー対策）
-    model = genai.GenerativeModel("gemini-1.5-pro-latest")
-    # ※もしこれでエラーになる場合、より高速で安定している "gemini-1.5-flash" に変更してみてください。
+    # 新しいGoogle GenAIクライアントの初期化
+    client = genai.Client(api_key=GEMINI_API_KEY)
 
     for i, company in enumerate(company_pages):
         company_name = company["name"]
@@ -104,8 +101,11 @@ try:
         
         news_text, comp_text, industry_text = "None", "", ""
         try:
-            response = model.generate_content(prompt)
-            # マークダウンの太字などを除去
+            # モデルを高速で安定した gemini-1.5-flash に変更
+            response = client.models.generate_content(
+                model='gemini-1.5-flash',
+                contents=prompt,
+            )
             ai_text = response.text.replace("**", "").replace("*", "").strip()
             
             for line in ai_text.split('\n'):
@@ -130,7 +130,10 @@ try:
                 
                 if ind_snippet:
                     ind_prompt = f"以下の【{target_industry}】に関する動向・ニュースを短く1〜2行で要約してください。\n{ind_snippet}"
-                    ind_response = model.generate_content(ind_prompt)
+                    ind_response = client.models.generate_content(
+                        model='gemini-1.5-flash',
+                        contents=ind_prompt,
+                    )
                     ind_news_text = ind_response.text.strip()
             except Exception:
                 ind_news_text = ""
@@ -139,7 +142,6 @@ try:
         properties_to_update = {}
         has_new_news = False
 
-        # NEWS
         if "None" in news_text or not news_text:
             if not existing_news:
                 properties_to_update["NEWS"] = {"rich_text": [{"text": {"content": "No News"}}]}
@@ -147,15 +149,12 @@ try:
             properties_to_update["NEWS"] = {"rich_text": [{"text": {"content": news_text}}]}
             has_new_news = True
 
-        # Competitor (未入力時のみ更新)
         if comp_text and "不明" not in comp_text and not existing_competitor:
             properties_to_update["Competitor"] = {"rich_text": [{"text": {"content": comp_text}}]}
 
-        # Industry
         if industry_text and "不明" not in industry_text:
             properties_to_update["Industry"] = {"rich_text": [{"text": {"content": industry_text}}]}
 
-        # Industry-News-
         if ind_news_text:
             properties_to_update["Industry-News-"] = {"rich_text": [{"text": {"content": ind_news_text}}]}
 
@@ -167,7 +166,6 @@ try:
             except Exception as e:
                 print(f"  -> ⚠️ Notion更新エラー: {e}")
 
-        # 新着ニュース時のInbox登録
         if has_new_news:
             try:
                 notion.pages.create(
