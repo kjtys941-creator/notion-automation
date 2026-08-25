@@ -94,7 +94,7 @@ try:
         指示2 (COMPETITOR): 対象または上位親企業の主な競合他社を2〜3社挙げてください（例: ダイキン工業, 三菱電機）。推測を含めて回答してください。
         指示3 (INDUSTRY): 対象が属する業界を「大分類-詳細（例: 製造業-空調（機械））」の形式で分類してください。名称から推測できる場合も分類してください。
 
-        必ず以下のフォーマット通りに出力してください:
+        【重要】必ず以下のフォーマット通りに出力してください。Markdown装飾（**などの太字）やリスト記号は絶対に使用しないでください。
         NEWS: [要約、または None]
         COMPETITOR: [競合企業名]
         INDUSTRY: [業界分類]
@@ -103,9 +103,11 @@ try:
         news_text, comp_text, industry_text = "None", "", ""
         try:
             response = model.generate_content(prompt)
-            ai_text = response.text.strip()
+            # マークダウンの太字などを除去
+            ai_text = response.text.replace("**", "").replace("*", "").strip()
             
             for line in ai_text.split('\n'):
+                line = line.strip()
                 if line.startswith("NEWS:"):
                     news_text = line.replace("NEWS:", "").strip()
                 elif line.startswith("COMPETITOR:"):
