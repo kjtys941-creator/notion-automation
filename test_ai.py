@@ -14,6 +14,32 @@ NOTION_TOKEN = os.environ.get("NOTION_API_KEY", "")
 CRM_DATABASE_ID = "3c45c2f07cc58027a608ceee5756f87a"
 INBOX_DATABASE_ID = "3c45c2f07cc58022986ff1726b012541"
 
+# ==========================================
+# AI呼び出し用の自動リトライ関数を定義（429エラー対策）
+# ==========================================
+def generate_content_with_retry(client, prompt, max_retries=3):
+    for attempt in range(max_retries):
+        try:
+            return client.models.generate_content(
+                model='gemini-3.6-flash',
+                contents=prompt
+            )
+        except Exception as e:
+            error_msg = str(e)
+            # 429エラー（利用制限）を検知した場合
+            if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
+                match = re.search(r'retry in (\d+\.?\d*)s', error_msg)
+                if match:
+                    wait_time = float(match.group(1)) + 2.0
+                else:
+                    wait_time = 15.0
+                
+                print(f"  -> ⏳ API制限(429)を検知。{wait_time:.1f}秒待機して自動再試行します... (試行 {attempt+1}/{max_retries})")
+                time.sleep(wait_time)
+            else:
+                raise e
+    raise Exception("API呼び出しの再試行上限に達しました。")
+
 try:
     notion = Client(auth=NOTION_TOKEN)
     print("1. 企業CRMマスターから企業一覧を取得中...")
@@ -73,19 +99,30 @@ try:
         print(f"\n----------------------------------------")
         print(f"[{i+1}/{len(company_pages)}] 処理中: {company_name}")
 
+        # Industryが既に入っている場合は処理をスキップ
+        if existing_industry and existing_industry not in ["不明", "None", "テスト用判定業界"]:
+            print(f"  -> ⏭️ 業界情報が入力済みのため、処理をスキップします。 (現在の業界: {existing_industry})")
+            continue
+
         ddgs = DDGS()
 
         # Step 1: 企業個別ニュースの検索
         news_snippet = ""
+        news_urls = [] # ★ニュースのソースURLを格納するリスト
         try:
             results = list(ddgs.text(f"{company_name} ニュース OR プレスリリース", max_results=2))
             for r in results:
                 news_snippet += f"{r.get('body', '')}\n"
+                # URLを取得してリストに追加（重複排除）
+                url = r.get('href', '')
+                if url and url not in news_urls:
+                    news_urls.append(url)
+                    
             print(f"  -> 🔍 Web検索完了 ({len(results)}件取得)")
         except Exception as e:
             print(f"  -> ⚠️ Web検索エラー: {e}")
 
-        # Step 2: AI分析 (JSON抽出) - ※モデルをgemini-3.6-flashに変更
+        # Step 2: AI分析 (JSON抽出)
         prompt = f"""
 対象企業名: {company_name}
 検索結果: {news_snippet}
@@ -99,40 +136,52 @@ try:
 """
         news_text, comp_text, industry_text = "None", "", ""
         try:
-            response = client.models.generate_content(
-                model='gemini-3.6-flash',
-                contents=prompt
-            )
+            response = generate_content_with_retry(client, prompt)
+            
             match = re.search(r'\{.*\}', response.text.strip(), re.DOTALL)
             if match:
                 data = json.loads(match.group(0))
                 news_text = data.get("NEWS", "None")
                 comp_text = data.get("COMPETITOR", "")
                 industry_text = data.get("INDUSTRY", "")
+                
+                # ★ニュースが存在する場合、末尾にソースURLを追記する
+                if news_text and "None" not in news_text and news_urls:
+                    news_text += "\n\n【ソース】\n" + "\n".join(news_urls)
+                    
                 print(f"  -> 🤖 AI解析完了 (業界: {industry_text})")
         except Exception as e:
             print(f"  -> ⚠️ AI解析エラー: {e}")
 
         # Step 3: 業界動向ニュースの検索と要約
         ind_news_text = ""
-        # 既存データを無視し、AIが判定した業界を最優先にする
         target_industry = industry_text
+        ind_urls = [] # ★業界ニュースのソースURLを格納するリスト
 
         if target_industry and target_industry != "不明" and target_industry != "None":
             print(f"  -> 🔍 業界【{target_industry}】の動向ニュースを検索・要約中...")
             try:
                 ind_query = f"{target_industry} 業界 最新 ニュース"
                 ind_results = list(ddgs.text(ind_query, max_results=2))
-                ind_snippet = "\n".join([r.get('body', '') for r in ind_results])
+                ind_snippet = ""
+                
+                for r in ind_results:
+                    ind_snippet += f"{r.get('body', '')}\n"
+                    # URLを取得してリストに追加（重複排除）
+                    url = r.get('href', '')
+                    if url and url not in ind_urls:
+                        ind_urls.append(url)
 
                 if ind_snippet:
                     ind_prompt = f"以下の【{target_industry}】に関するニュースを短く1〜2行で要約してください。\n{ind_snippet}"
-                    # ※ここもモデルをgemini-3.6-flashに変更
-                    ind_response = client.models.generate_content(
-                        model='gemini-3.6-flash',
-                        contents=ind_prompt
-                    )
+                    
+                    ind_response = generate_content_with_retry(client, ind_prompt)
                     ind_news_text = ind_response.text.strip()
+                    
+                    # ★業界ニュースが存在する場合、末尾にソースURLを追記する
+                    if ind_news_text and ind_urls:
+                        ind_news_text += "\n\n【ソース】\n" + "\n".join(ind_urls)
+                        
             except Exception as e:
                 print(f"  -> ⚠️ 業界ニュース検索エラー: {e}")
 
@@ -150,7 +199,6 @@ try:
         if comp_text and comp_text != "不明" and not existing_competitor:
             properties_to_update["Competitor"] = {"rich_text": [{"text": {"content": comp_text}}]}
 
-        # 常にAIの判定結果でIndustryを上書きする
         if industry_text and industry_text != "不明":
             properties_to_update["Industry"] = {"rich_text": [{"text": {"content": industry_text}}]}
 
@@ -180,6 +228,7 @@ try:
             except Exception:
                 pass
 
+        # ループごとの待機（連続リクエスト防止）
         if i < len(company_pages) - 1:
             time.sleep(3)
 
