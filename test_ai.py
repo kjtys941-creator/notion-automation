@@ -10,7 +10,7 @@ import re
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 NOTION_TOKEN = os.environ.get("NOTION_API_KEY", "")
 
-# Notion データベースID (ユーザーの提供データから)
+# Notion データベースID
 CRM_DATABASE_ID = "3c45c2f07cc58027a608ceee5756f87a"
 INBOX_DATABASE_ID = "3c45c2f07cc58022986ff1726b012541"
 
@@ -42,7 +42,6 @@ try:
                 comp_prop = props.get("Competitor", {}).get("rich_text", [])
                 existing_competitor = "".join([t.get("text", {}).get("content", "") for t in comp_prop]) if comp_prop else ""
 
-                # Industry プロパティも取得する
                 ind_prop = props.get("Industry", {}).get("rich_text", [])
                 existing_industry = "".join([t.get("text", {}).get("content", "") for t in ind_prop]) if ind_prop else ""
 
@@ -86,7 +85,7 @@ try:
         except Exception as e:
             print(f"  -> ⚠️ Web検索エラー: {e}")
 
-        # Step 2: AI分析 (JSON抽出)
+        # Step 2: AI分析 (JSON抽出) - ※モデルをgemini-3.6-flashに変更
         prompt = f"""
 対象企業名: {company_name}
 検索結果: {news_snippet}
@@ -101,7 +100,7 @@ try:
         news_text, comp_text, industry_text = "None", "", ""
         try:
             response = client.models.generate_content(
-                model='gemini-2.5-flash',
+                model='gemini-3.6-flash',
                 contents=prompt
             )
             match = re.search(r'\{.*\}', response.text.strip(), re.DOTALL)
@@ -114,10 +113,9 @@ try:
         except Exception as e:
             print(f"  -> ⚠️ AI解析エラー: {e}")
 
-        # Step 3: 業界動向ニュースの検索と要約 (修正ポイント1: AI判定の業界情報を最優先にする)
+        # Step 3: 業界動向ニュースの検索と要約
         ind_news_text = ""
-        # ユーザーの要件に従い、既存の業界情報は無視して、AIが判定した業界情報を最優先で使用する。
-        # target_industry = existing_industry if existing_industry else industry_text
+        # 既存データを無視し、AIが判定した業界を最優先にする
         target_industry = industry_text
 
         if target_industry and target_industry != "不明" and target_industry != "None":
@@ -129,8 +127,9 @@ try:
 
                 if ind_snippet:
                     ind_prompt = f"以下の【{target_industry}】に関するニュースを短く1〜2行で要約してください。\n{ind_snippet}"
+                    # ※ここもモデルをgemini-3.6-flashに変更
                     ind_response = client.models.generate_content(
-                        model='gemini-2.5-flash',
+                        model='gemini-3.6-flash',
                         contents=ind_prompt
                     )
                     ind_news_text = ind_response.text.strip()
@@ -141,7 +140,6 @@ try:
         properties_to_update = {}
         has_new_news = False
 
-        # NEWS プロパティの更新
         if "None" in news_text or not news_text:
             if not existing_news:
                 properties_to_update["NEWS"] = {"rich_text": [{"text": {"content": "No News"}}]}
@@ -149,20 +147,16 @@ try:
             properties_to_update["NEWS"] = {"rich_text": [{"text": {"content": news_text}}]}
             has_new_news = True
 
-        # Competitor プロパティの更新 (既存がなければ更新)
         if comp_text and comp_text != "不明" and not existing_competitor:
             properties_to_update["Competitor"] = {"rich_text": [{"text": {"content": comp_text}}]}
 
-        # Industry プロパティの更新 (修正ポイント2: 常にAIの判定結果で上書きする)
+        # 常にAIの判定結果でIndustryを上書きする
         if industry_text and industry_text != "不明":
-            # properties_to_update["Industry"] = {"rich_text": [{"text": {"content": industry_text}}]}
             properties_to_update["Industry"] = {"rich_text": [{"text": {"content": industry_text}}]}
 
-        # Industry-News- プロパティの更新
         if ind_news_text:
             properties_to_update["Industry-News-"] = {"rich_text": [{"text": {"content": ind_news_text}}]}
 
-        # 更新データの書き込み
         if properties_to_update:
             try:
                 notion.pages.update(page_id=company_id, properties=properties_to_update)
@@ -186,7 +180,6 @@ try:
             except Exception:
                 pass
 
-        # 連続実行を避けるためのスリープ
         if i < len(company_pages) - 1:
             time.sleep(3)
 
