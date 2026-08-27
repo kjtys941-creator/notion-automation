@@ -17,7 +17,8 @@ INBOX_DATABASE_ID = "3c45c2f07cc58022986ff1726b012541"
 # ==========================================
 # AI呼び出し用の自動リトライ関数を定義（429エラー対策）
 # ==========================================
-def generate_content_with_retry(client, prompt, max_retries=3):
+# ★修正点1: max_retriesを3から5に変更し、より粘り強く待機するようにしました
+def generate_content_with_retry(client, prompt, max_retries=5):
     for attempt in range(max_retries):
         try:
             return client.models.generate_content(
@@ -228,9 +229,10 @@ try:
             except Exception:
                 pass
 
-        # ループごとの待機（連続リクエスト防止）
+        # ★修正点2: 連続リクエストによるAPI制限を防ぐため、待機時間を3秒から15秒に延長
+        # （スキップされた企業はこの処理を通らないため、処理スピードへの影響は最小限です）
         if i < len(company_pages) - 1:
-            time.sleep(3)
+            time.sleep(15)
 
     print("\n🎉 全企業の巡回・業界分析が正常に終了しました！")
 except Exception as e:
