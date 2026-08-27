@@ -14,8 +14,13 @@ NOTION_TOKEN = os.environ.get("NOTION_API_KEY", "")
 CRM_DATABASE_ID = "3c45c2f07cc58027a608ceee5756f87a"
 INBOX_DATABASE_ID = "3c45c2f07cc58022986ff1726b012541"
 
-# ★404エラー対策: より確実につながるモデル名に変更
-MODEL_NAME = 'gemini-1.5-flash-latest' 
+# ★ここを絶対にエラーにならない「gemini-pro」に設定
+MODEL_NAME = 'gemini-pro' 
+
+print("\n==============================================")
+print(f"🚀 実行開始: 現在使用しているAIモデルは【 {MODEL_NAME} 】です")
+print("※もしここに 'gemini-1.5-flash-latest' と出たら、GitHubへのPushができていません！")
+print("==============================================\n")
 
 def generate_content_with_retry(client, prompt, max_retries=3):
     for attempt in range(max_retries):
@@ -31,7 +36,6 @@ def generate_content_with_retry(client, prompt, max_retries=3):
                 print(f"  -> ⏳ API制限検知。{wait_time}秒待機して再試行します... ({attempt+1}/{max_retries})")
                 time.sleep(wait_time)
             elif "404" in error_msg:
-                # 404エラーの場合はリトライしても無駄なため、即座にエラーを返す
                 raise Exception(f"404エラー: モデル '{MODEL_NAME}' が見つかりません。APIキーの権限を確認してください。")
             else:
                 raise e
