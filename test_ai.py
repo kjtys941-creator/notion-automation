@@ -14,8 +14,47 @@ NOTION_TOKEN = os.environ.get("NOTION_API_KEY", "")
 CRM_DATABASE_ID = "3c45c2f07cc58027a608ceee5756f87a"
 INBOX_DATABASE_ID = "3c45c2f07cc58022986ff1726b012541"
 
-# 使用するモデル（テスト後に自動で書き換わります）
-WORKING_MODEL = None
+print("\n==============================================")
+print("🔧 初期化プロセスを開始します...")
+
+if not GEMINI_API_KEY:
+    print("❌ 致命的なエラー: GEMINI_API_KEY が環境変数に設定されていません！GitHub Secrets を確認してください。")
+    exit(1)
+
+client = genai.Client(api_key=GEMINI_API_KEY)
+WORKING_MODEL = "gemini-1.5-flash" # 初期値
+
+print("🤖 Google APIにアクセスし、利用可能なモデルを直接問い合わせます...")
+try:
+    available_models = []
+    # APIキーに許可されているモデル一覧をGoogleから直接取得
+    for m in client.models.list():
+        name = getattr(m, 'name', str(m)).replace("models/", "")
+        if "gemini" in name.lower() and "vision" not in name.lower():
+            available_models.append(name)
+    
+    print(f"  -> 📄 あなたのAPIキーで使えるモデル一覧: {available_models}")
+    
+    if available_models:
+        preferred = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-1.0-pro", "gemini-pro"]
+        found = False
+        for p in preferred:
+            matches = [m for m in available_models if p in m]
+            if matches:
+                WORKING_MODEL = matches[0] # Googleが指定した正確な文字列をセット
+                found = True
+                break
+        if not found:
+            WORKING_MODEL = available_models[0]
+        print(f"  -> 🟢 Googleの指定に基づき【 {WORKING_MODEL} 】を使用します。")
+    else:
+        print("  -> ⚠️ APIキーに紐づくGeminiモデルが見つかりませんでした。デフォルトを試行します。")
+
+except Exception as e:
+    print(f"  -> ⚠️ モデル一覧の取得に失敗しました: {e}")
+    print("  -> デフォルト設定で強行突破を試みます...")
+
+print("==============================================\n")
 
 def generate_content_with_retry(client, prompt, max_retries=3):
     global WORKING_MODEL
@@ -31,43 +70,16 @@ def generate_content_with_retry(client, prompt, max_retries=3):
                 wait_time = 15.0
                 print(f"  -> ⏳ API制限検知。{wait_time}秒待機して再試行します... ({attempt+1}/{max_retries})")
                 time.sleep(wait_time)
+            elif "404" in error_msg:
+                 raise Exception(f"404エラー: モデル '{WORKING_MODEL}' が見つかりません。ログ上部にある「使えるモデル一覧」を確認してください。")
             else:
                 raise e
     raise Exception("API呼び出しの再試行上限に達しました。")
 
 try:
     notion = Client(auth=NOTION_TOKEN)
-    client = genai.Client(api_key=GEMINI_API_KEY)
-
-    print("\n==============================================")
-    print("🤖 利用可能なAIモデルを自動探索します...")
-    
-    # 新旧の主要モデルを網羅
-    models_to_test = [
-        "gemini-2.5-flash",
-        "gemini-1.5-flash",
-        "gemini-1.5-pro",
-        "gemini-1.0-pro",
-        "gemini-pro"
-    ]
-    
-    for m in models_to_test:
-        try:
-            print(f"  -> 🧪 '{m}' の通信テスト中...")
-            # 簡単な挨拶でテスト送信
-            client.models.generate_content(model=m, contents="Hello")
-            WORKING_MODEL = m
-            print(f"  -> 🟢 成功！今回の実行では【 {WORKING_MODEL} 】を使用します。")
-            break
-        except Exception:
-            # 失敗した場合は無視して次のモデルへ
-            pass
-            
-    if not WORKING_MODEL:
-        raise Exception("利用できるAIモデルが一つも見つかりませんでした。Google APIキーの有効性を確認してください。")
-    print("==============================================\n")
-
     print("1. 企業CRMマスターから企業一覧を取得中...")
+
     company_pages = []
     has_more = True
     next_cursor = None
