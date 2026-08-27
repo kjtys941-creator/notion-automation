@@ -12,30 +12,19 @@ NOTION_TOKEN = os.environ.get("NOTION_API_KEY", "")
 
 # Notion データベースID
 CRM_DATABASE_ID = "3c45c2f07cc58027a608ceee5756f87a"
-INBOX_DATABASE_ID = "3c45c2f07cc58022986ff1726b012541"
 
-# ==========================================
-# AI呼び出し用の自動リトライ関数を定義（429エラー対策）
-# ==========================================
-# ★修正点1: max_retriesを3から5に変更し、より粘り強く待機するようにしました
-def generate_content_with_retry(client, prompt, max_retries=5):
+def generate_content_with_retry(client, prompt, max_retries=3):
     for attempt in range(max_retries):
         try:
             return client.models.generate_content(
-                model='gemini-3.6-flash',
+                model='gemini-1.5-flash', # より安定した標準モデル名に変更
                 contents=prompt
             )
         except Exception as e:
             error_msg = str(e)
-            # 429エラー（利用制限）を検知した場合
             if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
-                match = re.search(r'retry in (\d+\.?\d*)s', error_msg)
-                if match:
-                    wait_time = float(match.group(1)) + 2.0
-                else:
-                    wait_time = 15.0
-                
-                print(f"  -> ⏳ API制限(429)を検知。{wait_time:.1f}秒待機して自動再試行します... (試行 {attempt+1}/{max_retries})")
+                wait_time = 15.0
+                print(f"  -> ⏳ API制限検知。{wait_time}秒待機して再試行します... ({attempt+1}/{max_retries})")
                 time.sleep(wait_time)
             else:
                 raise e
@@ -62,10 +51,7 @@ try:
             if parent.get("database_id", "").replace("-", "") == CRM_DATABASE_ID.replace("-", ""):
                 props = page.get("properties", {})
                 title_prop = props.get("Company Name", {}).get("title", [])
-
-                news_prop = props.get("NEWS", {}).get("rich_text", [])
-                existing_news = "".join([t.get("text", {}).get("content", "") for t in news_prop]) if news_prop else ""
-
+                
                 comp_prop = props.get("Competitor", {}).get("rich_text", [])
                 existing_competitor = "".join([t.get("text", {}).get("content", "") for t in comp_prop]) if comp_prop else ""
 
@@ -77,7 +63,6 @@ try:
                     company_pages.append({
                         "id": page["id"],
                         "name": company_name,
-                        "existing_news": existing_news.strip(),
                         "existing_competitor": existing_competitor.strip(),
                         "existing_industry": existing_industry.strip()
                     })
@@ -87,124 +72,65 @@ try:
 
     print(f"-> 合計 {len(company_pages)} 社のデータを取得しました。")
 
-    # 新SDKクライアントの初期化
     client = genai.Client(api_key=GEMINI_API_KEY)
 
     for i, company in enumerate(company_pages):
         company_name = company["name"]
         company_id = company["id"]
-        existing_news = company["existing_news"]
         existing_competitor = company["existing_competitor"]
         existing_industry = company["existing_industry"]
 
         print(f"\n----------------------------------------")
         print(f"[{i+1}/{len(company_pages)}] 処理中: {company_name}")
 
-        # Industryが既に入っている場合は処理をスキップ
-        if existing_industry and existing_industry not in ["不明", "None", "テスト用判定業界"]:
-            print(f"  -> ⏭️ 業界情報が入力済みのため、処理をスキップします。 (現在の業界: {existing_industry})")
+        # 業界と競合の両方が既に入っている場合はスキップ（爆速化の要）
+        if existing_industry and existing_industry not in ["不明", "None", ""] and existing_competitor and existing_competitor not in ["不明", "None", ""]:
+            print(f"  -> ⏭️ 業界および競合が入力済みのためスキップします。")
             continue
 
         ddgs = DDGS()
-
-        # Step 1: 企業個別ニュースの検索
-        news_snippet = ""
-        news_urls = [] # ★ニュースのソースURLを格納するリスト
+        snippet = ""
+        
+        # 検索キーワードを「事業内容・競合」に最適化
         try:
-            results = list(ddgs.text(f"{company_name} ニュース OR プレスリリース", max_results=2))
+            results = list(ddgs.text(f"{company_name} 事業内容 OR 企業情報 OR 競合", max_results=2))
             for r in results:
-                news_snippet += f"{r.get('body', '')}\n"
-                # URLを取得してリストに追加（重複排除）
-                url = r.get('href', '')
-                if url and url not in news_urls:
-                    news_urls.append(url)
-                    
-            print(f"  -> 🔍 Web検索完了 ({len(results)}件取得)")
+                snippet += f"{r.get('body', '')}\n"
+            print(f"  -> 🔍 Web検索完了")
         except Exception as e:
             print(f"  -> ⚠️ Web検索エラー: {e}")
 
-        # Step 2: AI分析 (JSON抽出)
+        # AIに業界と競合だけを考えさせる（処理の軽量化）
         prompt = f"""
 対象企業名: {company_name}
-検索結果: {news_snippet}
+検索結果: {snippet}
 
-上記に基づき、以下の3つの情報を抽出し、必ずJSON形式のみで出力してください。
+上記に基づき、以下の2つの情報を抽出し、必ずJSON形式のみで出力してください。
 {{
-  "NEWS": "直近ニュースや事業動向の要約（なければ 'None'）",
   "COMPETITOR": "主な競合他社2〜3社（不明な場合は '不明'）",
   "INDUSTRY": "大分類-詳細の形式で業界分類（例: 製造業-空調機械。不明な場合は '不明'）"
 }}
 """
-        news_text, comp_text, industry_text = "None", "", ""
+        comp_text, industry_text = "", ""
         try:
             response = generate_content_with_retry(client, prompt)
-            
             match = re.search(r'\{.*\}', response.text.strip(), re.DOTALL)
             if match:
                 data = json.loads(match.group(0))
-                news_text = data.get("NEWS", "None")
                 comp_text = data.get("COMPETITOR", "")
                 industry_text = data.get("INDUSTRY", "")
-                
-                # ★ニュースが存在する場合、末尾にソースURLを追記する
-                if news_text and "None" not in news_text and news_urls:
-                    news_text += "\n\n【ソース】\n" + "\n".join(news_urls)
-                    
-                print(f"  -> 🤖 AI解析完了 (業界: {industry_text})")
+                print(f"  -> 🤖 AI解析完了 (業界: {industry_text}, 競合: {comp_text})")
         except Exception as e:
             print(f"  -> ⚠️ AI解析エラー: {e}")
 
-        # Step 3: 業界動向ニュースの検索と要約
-        ind_news_text = ""
-        target_industry = industry_text
-        ind_urls = [] # ★業界ニュースのソースURLを格納するリスト
-
-        if target_industry and target_industry != "不明" and target_industry != "None":
-            print(f"  -> 🔍 業界【{target_industry}】の動向ニュースを検索・要約中...")
-            try:
-                ind_query = f"{target_industry} 業界 最新 ニュース"
-                ind_results = list(ddgs.text(ind_query, max_results=2))
-                ind_snippet = ""
-                
-                for r in ind_results:
-                    ind_snippet += f"{r.get('body', '')}\n"
-                    # URLを取得してリストに追加（重複排除）
-                    url = r.get('href', '')
-                    if url and url not in ind_urls:
-                        ind_urls.append(url)
-
-                if ind_snippet:
-                    ind_prompt = f"以下の【{target_industry}】に関するニュースを短く1〜2行で要約してください。\n{ind_snippet}"
-                    
-                    ind_response = generate_content_with_retry(client, ind_prompt)
-                    ind_news_text = ind_response.text.strip()
-                    
-                    # ★業界ニュースが存在する場合、末尾にソースURLを追記する
-                    if ind_news_text and ind_urls:
-                        ind_news_text += "\n\n【ソース】\n" + "\n".join(ind_urls)
-                        
-            except Exception as e:
-                print(f"  -> ⚠️ 業界ニュース検索エラー: {e}")
-
-        # Step 4: Notion更新データの作成と書き込み
+        # Notionへ書き込み
         properties_to_update = {}
-        has_new_news = False
 
-        if "None" in news_text or not news_text:
-            if not existing_news:
-                properties_to_update["NEWS"] = {"rich_text": [{"text": {"content": "No News"}}]}
-        else:
-            properties_to_update["NEWS"] = {"rich_text": [{"text": {"content": news_text}}]}
-            has_new_news = True
-
-        if comp_text and comp_text != "不明" and not existing_competitor:
+        if not existing_competitor and comp_text and comp_text != "不明":
             properties_to_update["Competitor"] = {"rich_text": [{"text": {"content": comp_text}}]}
 
-        if industry_text and industry_text != "不明":
+        if not existing_industry and industry_text and industry_text != "不明":
             properties_to_update["Industry"] = {"rich_text": [{"text": {"content": industry_text}}]}
-
-        if ind_news_text:
-            properties_to_update["Industry-News-"] = {"rich_text": [{"text": {"content": ind_news_text}}]}
 
         if properties_to_update:
             try:
@@ -212,28 +138,12 @@ try:
                 print(f"  -> ✅ Notion更新完了: {list(properties_to_update.keys())}")
             except Exception as e:
                 print(f"  -> ⚠️ Notion更新エラー: {e}")
+        else:
+            print(f"  -> ⏩ 更新する新しい情報がありませんでした。")
 
-        # 新着ニュース検知時のInboxタスク自動登録
-        if has_new_news:
-            try:
-                notion.pages.create(
-                    parent={"database_id": INBOX_DATABASE_ID},
-                    properties={
-                        "トピック": {"title": [{"text": {"content": f"【グローバル巡回】{company_name} の最新情報チェック"}}]},
-                        "Company Master": {"relation": [{"id": company_id}]},
-                        "Emergency": {"multi_select": [{"name": "Middle"}]},
-                        "メール要約": {"rich_text": [{"text": {"content": news_text}}]},
-                        "次のアクション": {"rich_text": [{"text": {"content": "内容を確認してアプローチ方針を検討する"}}]}
-                    }
-                )
-            except Exception:
-                pass
+        # 429エラーを根本的に防ぐための4秒待機（1分間に15回の制限に絶対に引っかからないペース）
+        time.sleep(4.5)
 
-        # ★修正点2: 連続リクエストによるAPI制限を防ぐため、待機時間を3秒から15秒に延長
-        # （スキップされた企業はこの処理を通らないため、処理スピードへの影響は最小限です）
-        if i < len(company_pages) - 1:
-            time.sleep(15)
-
-    print("\n🎉 全企業の巡回・業界分析が正常に終了しました！")
+    print("\n🎉 マスターデータの自動入力がすべて完了しました！")
 except Exception as e:
     print(f"❌ 処理が全体エラーで停止しました: {e}")
