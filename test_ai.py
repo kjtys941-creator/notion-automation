@@ -14,19 +14,15 @@ NOTION_TOKEN = os.environ.get("NOTION_API_KEY", "")
 CRM_DATABASE_ID = "3c45c2f07cc58027a608ceee5756f87a"
 INBOX_DATABASE_ID = "3c45c2f07cc58022986ff1726b012541"
 
-# ★ここを絶対にエラーにならない「gemini-pro」に設定
-MODEL_NAME = 'gemini-pro' 
-
-print("\n==============================================")
-print(f"🚀 実行開始: 現在使用しているAIモデルは【 {MODEL_NAME} 】です")
-print("※もしここに 'gemini-1.5-flash-latest' と出たら、GitHubへのPushができていません！")
-print("==============================================\n")
+# 使用するモデル（テスト後に自動で書き換わります）
+WORKING_MODEL = None
 
 def generate_content_with_retry(client, prompt, max_retries=3):
+    global WORKING_MODEL
     for attempt in range(max_retries):
         try:
             return client.models.generate_content(
-                model=MODEL_NAME,
+                model=WORKING_MODEL,
                 contents=prompt
             )
         except Exception as e:
@@ -35,16 +31,43 @@ def generate_content_with_retry(client, prompt, max_retries=3):
                 wait_time = 15.0
                 print(f"  -> ⏳ API制限検知。{wait_time}秒待機して再試行します... ({attempt+1}/{max_retries})")
                 time.sleep(wait_time)
-            elif "404" in error_msg:
-                raise Exception(f"404エラー: モデル '{MODEL_NAME}' が見つかりません。APIキーの権限を確認してください。")
             else:
                 raise e
     raise Exception("API呼び出しの再試行上限に達しました。")
 
 try:
     notion = Client(auth=NOTION_TOKEN)
-    print("1. 企業CRMマスターから企業一覧を取得中...")
+    client = genai.Client(api_key=GEMINI_API_KEY)
 
+    print("\n==============================================")
+    print("🤖 利用可能なAIモデルを自動探索します...")
+    
+    # 新旧の主要モデルを網羅
+    models_to_test = [
+        "gemini-2.5-flash",
+        "gemini-1.5-flash",
+        "gemini-1.5-pro",
+        "gemini-1.0-pro",
+        "gemini-pro"
+    ]
+    
+    for m in models_to_test:
+        try:
+            print(f"  -> 🧪 '{m}' の通信テスト中...")
+            # 簡単な挨拶でテスト送信
+            client.models.generate_content(model=m, contents="Hello")
+            WORKING_MODEL = m
+            print(f"  -> 🟢 成功！今回の実行では【 {WORKING_MODEL} 】を使用します。")
+            break
+        except Exception:
+            # 失敗した場合は無視して次のモデルへ
+            pass
+            
+    if not WORKING_MODEL:
+        raise Exception("利用できるAIモデルが一つも見つかりませんでした。Google APIキーの有効性を確認してください。")
+    print("==============================================\n")
+
+    print("1. 企業CRMマスターから企業一覧を取得中...")
     company_pages = []
     has_more = True
     next_cursor = None
@@ -85,8 +108,6 @@ try:
         next_cursor = search_response.get("next_cursor", None)
 
     print(f"-> 合計 {len(company_pages)} 社のデータを取得しました。")
-
-    client = genai.Client(api_key=GEMINI_API_KEY)
     ddgs = DDGS()
 
     for i, company in enumerate(company_pages):
